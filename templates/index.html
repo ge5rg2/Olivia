@@ -1,0 +1,427 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FastAPI Ollama 채팅</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f7f9;
+        color: #333;
+      }
+      .header {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      .chat-container {
+        height: 550px;
+        border: 1px solid #ddd;
+        padding: 15px;
+        overflow-y: auto;
+        margin-bottom: 15px;
+        background-color: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+      }
+      .message {
+        margin-bottom: 15px;
+        padding: 12px 15px;
+        border-radius: 8px;
+        max-width: 80%;
+        position: relative;
+        animation: fadeIn 0.3s;
+      }
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      .user {
+        background-color: #e3f2fd;
+        color: #0d47a1;
+        margin-left: auto;
+        margin-right: 5px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+      }
+      .assistant {
+        background-color: #f1f8e9;
+        color: #1b5e20;
+        margin-right: auto;
+        margin-left: 5px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+      }
+      .typing {
+        font-style: italic;
+        color: #777;
+        margin-bottom: 10px;
+      }
+      .input-container {
+        display: flex;
+        margin-top: 15px;
+      }
+      #message-input {
+        flex-grow: 1;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px 0 0 4px;
+        font-size: 16px;
+      }
+      button {
+        padding: 12px 18px;
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: background-color 0.2s;
+        margin-left: 8px;
+      }
+      button:hover {
+        background-color: #45a049;
+      }
+      .controls {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 15px;
+        align-items: center;
+      }
+      .model-select {
+        display: flex;
+        align-items: center;
+      }
+      select {
+        padding: 10px;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+        font-size: 16px;
+        margin-left: 8px;
+      }
+      .tabs {
+        display: flex;
+        margin-bottom: 20px;
+        border-bottom: 1px solid #ddd;
+      }
+      .tab {
+        padding: 10px 20px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        margin-right: 5px;
+        border-radius: 4px 4px 0 0;
+      }
+      .tab.active {
+        border: 1px solid #ddd;
+        border-bottom: 1px solid white;
+        background-color: white;
+        margin-bottom: -1px;
+      }
+      .connection-status {
+        font-size: 14px;
+        color: #777;
+      }
+      .connection-status.connected {
+        color: #4caf50;
+      }
+      .connection-status.disconnected {
+        color: #f44336;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>FastAPI Ollama 채팅</h1>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-mode="rest">REST API</div>
+      <div class="tab" data-mode="websocket">WebSocket</div>
+    </div>
+
+    <div class="controls">
+      <div class="model-select">
+        <label for="model-select">모델:</label>
+        <select id="model-select">
+          <option value="olivia" selected>olivia</option>
+          <option value="mistral">Mistral</option>
+          <option value="gemma">Gemma</option>
+        </select>
+      </div>
+      <div class="connection-status" id="connection-status">REST API 모드</div>
+      <button id="clear-btn">대화 기록 지우기</button>
+    </div>
+
+    <div class="chat-container" id="chat-container"></div>
+
+    <div class="input-container">
+      <input
+        type="text"
+        id="message-input"
+        placeholder="메시지를 입력하세요..."
+        autocomplete="off"
+      />
+      <button id="send-btn">전송</button>
+      <button id="stream-btn">스트림</button>
+    </div>
+
+    <script>
+      const chatContainer = document.getElementById("chat-container");
+      const messageInput = document.getElementById("message-input");
+      const sendBtn = document.getElementById("send-btn");
+      const streamBtn = document.getElementById("stream-btn");
+      const clearBtn = document.getElementById("clear-btn");
+      const modelSelect = document.getElementById("model-select");
+      const tabs = document.querySelectorAll(".tab");
+      const connectionStatus = document.getElementById("connection-status");
+
+      let currentMode = "rest";
+      let socket = null;
+      let clientId = generateUUID();
+
+      // UUID 생성 함수
+      function generateUUID() {
+        return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+          /[xy]/g,
+          function (c) {
+            const r = (Math.random() * 16) | 0,
+              v = c == "x" ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+          }
+        );
+      }
+
+      // 탭 변경 처리
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          tabs.forEach((t) => t.classList.remove("active"));
+          tab.classList.add("active");
+          currentMode = tab.dataset.mode;
+
+          if (currentMode === "websocket") {
+            setupWebSocket();
+            streamBtn.style.display = "none";
+            connectionStatus.textContent = "연결 중...";
+            connectionStatus.className = "connection-status";
+          } else {
+            if (socket) {
+              socket.close();
+              socket = null;
+            }
+            streamBtn.style.display = "block";
+            connectionStatus.textContent = "REST API 모드";
+            connectionStatus.className = "connection-status";
+          }
+        });
+      });
+
+      // WebSocket 설정
+      function setupWebSocket() {
+        if (socket) {
+          socket.close();
+        }
+
+        socket = new WebSocket(`ws://${window.location.host}/ws/${clientId}`);
+
+        socket.onopen = function (e) {
+          connectionStatus.textContent = "연결됨";
+          connectionStatus.className = "connection-status connected";
+        };
+
+        socket.onmessage = function (event) {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "chunk") {
+            // 메시지가 이미 시작되었는지 확인
+            let messageDiv = chatContainer.querySelector(
+              ".assistant:last-child"
+            );
+            if (!messageDiv) {
+              messageDiv = document.createElement("div");
+              messageDiv.className = "message assistant";
+              chatContainer.appendChild(messageDiv);
+            }
+
+            messageDiv.textContent += data.content;
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+          } else if (data.type === "status") {
+            const typingDiv = document.createElement("div");
+            typingDiv.className = "typing";
+            typingDiv.textContent = data.message;
+            typingDiv.id = "typing-indicator";
+            chatContainer.appendChild(typingDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+          } else if (data.type === "complete") {
+            const typingIndicator = document.getElementById("typing-indicator");
+            if (typingIndicator) {
+              typingIndicator.remove();
+            }
+          } else if (data.type === "error") {
+            addMessage(`오류: ${data.message}`, "error");
+          }
+        };
+
+        socket.onclose = function (event) {
+          connectionStatus.textContent = "연결 끊김";
+          connectionStatus.className = "connection-status disconnected";
+          setTimeout(setupWebSocket, 2000); // 자동 재연결 시도
+        };
+
+        socket.onerror = function (error) {
+          connectionStatus.textContent = "연결 오류";
+          connectionStatus.className = "connection-status disconnected";
+          console.error("WebSocket 오류:", error);
+        };
+      }
+
+      // 페이지 로드 시 기록 가져오기
+      window.addEventListener("load", async () => {
+        try {
+          const response = await fetch("/api/history");
+          const history = await response.json();
+
+          history.forEach((msg) => {
+            addMessage(msg.content, msg.role);
+          });
+
+          chatContainer.scrollTop = chatContainer.scrollHeight;
+        } catch (error) {
+          console.error("채팅 기록을 불러오는데 실패했습니다:", error);
+        }
+      });
+
+      // 일반 채팅 메시지 전송 (REST API)
+      sendBtn.addEventListener("click", async () => {
+        const message = messageInput.value.trim();
+        if (!message) return;
+
+        addMessage(message, "user");
+        messageInput.value = "";
+
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+
+        if (
+          currentMode === "websocket" &&
+          socket &&
+          socket.readyState === WebSocket.OPEN
+        ) {
+          // WebSocket 모드
+          socket.send(
+            JSON.stringify({
+              message: message,
+              model: modelSelect.value,
+            })
+          );
+        } else {
+          // REST API 모드
+          try {
+            const response = await fetch("/api/chat", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                message: message,
+                model: modelSelect.value,
+              }),
+            });
+
+            const data = await response.json();
+            if (data.error) {
+              addMessage(`오류: ${data.error}`, "error");
+            } else {
+              addMessage(data.response, "assistant");
+            }
+          } catch (error) {
+            addMessage(`오류: ${error.message}`, "error");
+          }
+        }
+
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+      });
+
+      // 스트리밍 방식으로 채팅 메시지 전송 (REST API)
+      streamBtn.addEventListener("click", () => {
+        const message = messageInput.value.trim();
+        if (!message) return;
+
+        addMessage(message, "user");
+        messageInput.value = "";
+
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+
+        // 스트리밍을 위한 새 메시지 요소 생성
+        const messageDiv = document.createElement("div");
+        messageDiv.className = "message assistant";
+        messageDiv.textContent = "";
+        chatContainer.appendChild(messageDiv);
+
+        // 서버로부터 스트리밍 데이터 수신
+        const eventSource = new EventSource(
+          `/api/stream-chat?model=${
+            modelSelect.value
+          }&message=${encodeURIComponent(message)}`
+        );
+
+        eventSource.onmessage = (event) => {
+          messageDiv.textContent += event.data;
+          chatContainer.scrollTop = chatContainer.scrollHeight;
+        };
+
+        eventSource.onerror = () => {
+          eventSource.close();
+        };
+
+        eventSource.onopen = () => {
+          fetch("/api/stream-chat", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              message: message,
+              model: modelSelect.value,
+            }),
+          });
+        };
+      });
+
+      // 대화 기록 지우기
+      clearBtn.addEventListener("click", async () => {
+        try {
+          await fetch("/api/clear-history", { method: "POST" });
+          chatContainer.innerHTML = "";
+        } catch (error) {
+          console.error("대화 기록 지우기 실패:", error);
+        }
+      });
+
+      // Enter 키로 메시지 전송
+      messageInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") {
+          sendBtn.click();
+        }
+      });
+
+      // 메시지 추가 함수
+      function addMessage(content, role) {
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `message ${role}`;
+        messageDiv.textContent = content;
+        chatContainer.appendChild(messageDiv);
+
+        // 타이핑 표시기가 있다면 제거
+        const typingIndicator = document.getElementById("typing-indicator");
+        if (typingIndicator) {
+          typingIndicator.remove();
+        }
+      }
+    </script>
+  </body>
+</html>
