@@ -16,6 +16,7 @@ import numpy as np
 from pathlib import Path
 import sys
 import subprocess
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Olivia AI", description="Olivia AI Chat")
 
@@ -23,6 +24,15 @@ app = FastAPI(title="Olivia AI", description="Olivia AI Chat")
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.urandom(24)
+)
+
+# CORS 설정
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 템플릿 및 정적 파일 설정
@@ -46,34 +56,8 @@ if not CSM_DIR.exists():
     sys.exit(1)
 
 # CSM 모델 설정
-async def setup_csm():
-    if torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
-    
-    try:
-        # CSM 모듈 경로 추가
-        sys.path.append(str(CSM_DIR))
-        
-        # triton 의존성 우회
-        os.environ["NO_TORCH_COMPILE"] = "1"
-        os.environ["TORCH_COMPILE_DISABLE"] = "1"
-        
-        from generator import load_csm_1b
-        
-        # CSM 모델 로드 (별도 스레드에서 실행)
-        loop = asyncio.get_event_loop()
-        generator = await loop.run_in_executor(
-            None,
-            lambda: load_csm_1b(device=device)
-        )
-        return generator
-    except Exception as e:
-        print(f"CSM 모델 로드 실패: {str(e)}")
-        return None
+device = "cuda" if torch.cuda.is_available() else "cpu"
+generator = load_csm_1b(device=device)
 
 # 전역 CSM 모델 인스턴스
 csm_generator = None
@@ -82,7 +66,7 @@ csm_generator = None
 async def startup_event():
     global csm_generator
     print("CSM 모델을 로드하는 중입니다...")
-    csm_generator = await setup_csm()
+    csm_generator = generator
     print("CSM 모델 로드 완료")
 
 # 채팅 기록 저장소 (실제 프로덕션에서는 데이터베이스 사용 권장)
@@ -121,23 +105,16 @@ async def generate_audio(text: str, user_id: str) -> Optional[str]:
         # 오디오 파일 경로 설정
         audio_path = AUDIO_DIR / f"{user_id}_{uuid.uuid4()}.wav"
         
-        # 음성 생성 (별도 스레드에서 실행)
-        loop = asyncio.get_event_loop()
-        audio = await loop.run_in_executor(
-            None,
-            lambda: csm_generator.generate(
-                text=text,
-                speaker=0,  # 기본 스피커 사용
-                context=[],  # 컨텍스트 없음
-                max_audio_length_ms=10_000,  # 최대 10초
-            )
+        # 음성 생성
+        audio = csm_generator.generate(
+            text=text,
+            speaker=0,
+            context=[],
+            max_audio_length_ms=10_000
         )
         
         # 오디오 저장
-        await loop.run_in_executor(
-            None,
-            lambda: torchaudio.save(str(audio_path), audio.unsqueeze(0).cpu(), csm_generator.sample_rate)
-        )
+        torchaudio.save(str(audio_path), audio.unsqueeze(0).cpu(), csm_generator.sample_rate)
         
         return str(audio_path.relative_to("static"))
     except Exception as e:
