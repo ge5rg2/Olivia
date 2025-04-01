@@ -4,7 +4,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FastAPI Ollama 채팅</title>
+    <title>Olivia</title>
     <style>
       body {
         font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
@@ -35,6 +35,26 @@
         max-width: 80%;
         position: relative;
         animation: fadeIn 0.3s;
+      }
+      .message-content {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+      }
+      .message-text {
+        flex-grow: 1;
+      }
+      .play-button {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 5px;
+        color: #4caf50;
+        font-size: 20px;
+        margin: 0;
+      }
+      .play-button:hover {
+        color: #45a049;
       }
       @keyframes fadeIn {
         from {
@@ -137,7 +157,7 @@
   </head>
   <body>
     <div class="header">
-      <h1>FastAPI Ollama 채팅</h1>
+      <h1>Olivia</h1>
     </div>
 
     <div class="tabs">
@@ -149,7 +169,7 @@
       <div class="model-select">
         <label for="model-select">모델:</label>
         <select id="model-select">
-          <option value="olivia" selected>olivia</option>
+          <option value="olivia:beta" selected>olivia:beta</option>
           <option value="mistral">Mistral</option>
           <option value="gemma">Gemma</option>
         </select>
@@ -221,7 +241,7 @@
         });
       });
 
-      // WebSocket 설정
+      // WebSocket 설정 보이스 적용시 재확인
       function setupWebSocket() {
         if (socket) {
           socket.close();
@@ -296,6 +316,41 @@
         }
       });
 
+      // 메시지 추가 함수
+      function addMessage(content, role, audioUrl = null) {
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `message ${role}`;
+
+        const contentDiv = document.createElement("div");
+        contentDiv.className = "message-content";
+
+        const textDiv = document.createElement("div");
+        textDiv.className = "message-text";
+        textDiv.textContent = content;
+
+        contentDiv.appendChild(textDiv);
+
+        if (audioUrl) {
+          const playButton = document.createElement("button");
+          playButton.className = "play-button";
+          playButton.innerHTML = "🔊";
+          playButton.onclick = () => {
+            const audio = new Audio(audioUrl);
+            audio.play();
+          };
+          contentDiv.appendChild(playButton);
+        }
+
+        messageDiv.appendChild(contentDiv);
+        chatContainer.appendChild(messageDiv);
+
+        // 타이핑 표시기가 있다면 제거
+        const typingIndicator = document.getElementById("typing-indicator");
+        if (typingIndicator) {
+          typingIndicator.remove();
+        }
+      }
+
       // 일반 채팅 메시지 전송 (REST API)
       sendBtn.addEventListener("click", async () => {
         const message = messageInput.value.trim();
@@ -336,7 +391,7 @@
             if (data.error) {
               addMessage(`오류: ${data.error}`, "error");
             } else {
-              addMessage(data.response, "assistant");
+              addMessage(data.response, "assistant", data.audio_url);
             }
           } catch (error) {
             addMessage(`오류: ${error.message}`, "error");
@@ -346,7 +401,7 @@
         chatContainer.scrollTop = chatContainer.scrollHeight;
       });
 
-      // 스트리밍 방식으로 채팅 메시지 전송 (REST API)
+      // 스트리밍 방식으로 채팅 메시지 전송
       streamBtn.addEventListener("click", () => {
         const message = messageInput.value.trim();
         if (!message) return;
@@ -362,34 +417,59 @@
         messageDiv.textContent = "";
         chatContainer.appendChild(messageDiv);
 
-        // 서버로부터 스트리밍 데이터 수신
-        const eventSource = new EventSource(
-          `/api/stream-chat?model=${
-            modelSelect.value
-          }&message=${encodeURIComponent(message)}`
-        );
+        // 초기 POST 요청으로 스트리밍 시작
+        fetch("/api/chat/stream", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message: message,
+            model: modelSelect.value,
+          }),
+        })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error("POST 요청 실패");
+            }
+            // POST 요청 성공 후 EventSource 연결
+            const eventSource = new EventSource(
+              `/api/chat/stream?dummy=${Date.now()}`
+            );
 
-        eventSource.onmessage = (event) => {
-          messageDiv.textContent += event.data;
-          chatContainer.scrollTop = chatContainer.scrollHeight;
-        };
+            // SSE 이벤트 핸들러
+            eventSource.onmessage = (event) => {
+              const data = event.data;
 
-        eventSource.onerror = () => {
-          eventSource.close();
-        };
+              // 스트림 종료 신호 확인
+              if (data === "[DONE]") {
+                eventSource.close();
+                return;
+              }
 
-        eventSource.onopen = () => {
-          fetch("/api/stream-chat", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              message: message,
-              model: modelSelect.value,
-            }),
+              try {
+                // JSON 응답인 경우 (에러 메시지)
+                const jsonData = JSON.parse(data);
+                if (jsonData.error) {
+                  messageDiv.textContent = `오류: ${jsonData.error}`;
+                  eventSource.close();
+                }
+              } catch {
+                // 일반 텍스트 응답인 경우
+                messageDiv.textContent += data;
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+              }
+            };
+
+            eventSource.onerror = (error) => {
+              console.error("EventSource 오류:", error);
+              eventSource.close();
+            };
+          })
+          .catch((error) => {
+            console.error("요청 중 오류:", error);
+            messageDiv.textContent = `오류: ${error.message}`;
           });
-        };
       });
 
       // 대화 기록 지우기
@@ -408,20 +488,6 @@
           sendBtn.click();
         }
       });
-
-      // 메시지 추가 함수
-      function addMessage(content, role) {
-        const messageDiv = document.createElement("div");
-        messageDiv.className = `message ${role}`;
-        messageDiv.textContent = content;
-        chatContainer.appendChild(messageDiv);
-
-        // 타이핑 표시기가 있다면 제거
-        const typingIndicator = document.getElementById("typing-indicator");
-        if (typingIndicator) {
-          typingIndicator.remove();
-        }
-      }
     </script>
   </body>
 </html>
